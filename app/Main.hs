@@ -3,6 +3,7 @@ module Main where
 import Text.ParserCombinators.Parsec hiding ( spaces )
 import System.Environment (getArgs)
 import Control.Monad (liftM)
+import Data.Function ((&))
 
 main :: IO ()
 main = do
@@ -53,5 +54,24 @@ parseExpr :: Parser LispVal
 parseExpr =   parseAtom
           <|> parseString
           <|> parseNumber
+          <|> parseQuoted
+          <|> do _ <- char '('
+                 x <- (try parseList) <|> parseDottedList
+                 _ <- char ')'
+                 return x
 
+parseList :: Parser LispVal
+parseList = parseExpr `sepBy` spaces
+          & liftM List
 
+parseDottedList :: Parser LispVal
+parseDottedList = do
+  h <- parseExpr `endBy` spaces
+  t <- char '.' >> spaces >> parseExpr
+  return $ DottedList h t
+
+parseQuoted :: Parser LispVal
+parseQuoted = do
+  _ <- char '\''
+  x <- parseExpr
+  return $ List [Atom "quote", x]
