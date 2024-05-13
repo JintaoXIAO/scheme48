@@ -1,18 +1,37 @@
 {-# LANGUAGE ExistentialQuantification #-}
 module Main where
 
-import Text.ParserCombinators.Parsec hiding ( spaces )
+import Text.ParserCombinators.Parsec
+    ( char,
+      digit,
+      letter,
+      noneOf,
+      oneOf,
+      space,
+      endBy,
+      sepBy,
+      skipMany1,
+      (<|>),
+      many,
+      many1,
+      parse,
+      try,
+      ParseError,
+      Parser )
 import System.Environment (getArgs)
 import Control.Monad (liftM)
 import Data.Function ((&))
 import Control.Exception (Exception)
 import Control.Monad.Error.Class (MonadError(catchError, throwError))
+import System.IO ( hFlush, stdout )
 
 main :: IO ()
 main = do
   args <- getArgs
-  evaled <- return $ liftM show $ readExpr (args !! 0) >>= eval
-  putStrLn $ extractValue $ trapError evaled
+  case length args of
+    0 -> runRepl
+    1 -> evalAndPrint $ args !! 0
+    _ -> putStrLn "Program takes only 0 or 1 argument"
 
 readExpr :: String -> ThrowsError LispVal
 readExpr inp = case parse parseExpr "(lisp)" inp of
@@ -274,4 +293,30 @@ trapError action = catchError action (return . show)
 extractValue :: ThrowsError a -> a
 extractValue (Right val) = val
 extractValue _ = undefined
+
+-- repl
+
+flushStr :: String -> IO ()
+flushStr str = putStr str >> hFlush stdout
+
+readPrompt :: String -> IO String
+readPrompt prompt = flushStr prompt >> getLine
+
+evalString :: String -> IO String
+evalString expr =
+  return $ extractValue $ trapError (liftM show $ readExpr expr >>= eval)
+
+evalAndPrint :: String -> IO ()
+evalAndPrint expr = evalString expr >>= putStrLn
+
+until_ :: Monad m
+       => (a -> Bool) -> m a -> (a -> m ()) -> m ()
+until_ cond prompt action = do
+  rst <- prompt
+  if cond rst
+  then return ()
+  else action rst >> until_ cond prompt action
+
+runRepl :: IO ()
+runRepl = until_ (== "quit") (readPrompt "Lisp>>> ") evalAndPrint
 
