@@ -1,3 +1,4 @@
+{-# LANGUAGE ExistentialQuantification #-}
 module Main where
 
 import Text.ParserCombinators.Parsec hiding ( spaces )
@@ -100,6 +101,11 @@ eval val@(String _) = return val
 eval val@(Bool _) = return val
 eval val@(Number _) = return val
 eval (List [Atom "quota", val]) = return val
+eval (List [Atom "if", cond, conseq, alt]) = do
+  rst <- eval cond
+  case rst of
+    Bool False -> eval alt
+    _ -> eval conseq
 eval (List (Atom func : args)) = mapM eval args >>= apply func
 eval badForm = throwError $ BadSpecialForm "Unrecognized special form" badForm
 
@@ -116,7 +122,51 @@ primitives = [("+", numericBinop (+))
              ,("mod", numericBinop mod)
              ,("quotient", numericBinop quot)
              ,("remainder", numericBinop rem)
+             ,("=", numBoolBinop (==))
+             ,("<", numBoolBinop (<))
+             ,(">", numBoolBinop (>))
+             ,("/=", numBoolBinop (/=))
+             ,(">=", numBoolBinop (>=))
+             ,("<=", numBoolBinop (<=))
+             ,("&&", boolBoolBinop (&&))
+             ,("||", boolBoolBinop (||))
+             ,("string=?", strBoolBinop (==))
+             ,("string?", strBoolBinop (>))
+             ,("string<=?", strBoolBinop (<=))
+             ,("string>=?", strBoolBinop (>=))
+             ,("car", car)
+             ,("cdr", cdr)
+             ,("cons", cons)
+             ,("eq?", eqv)
+             ,("eqv?", eqv)
+             ,("equal?", equal)
              ]
+
+boolBinop :: (LispVal -> ThrowsError a) -> (a -> a -> Bool) -> [LispVal] -> ThrowsError LispVal
+boolBinop unpacker op args = if length args /= 2
+                             then throwError $ NumArgs 2 args
+                             else do left <- unpacker $ args !! 0
+                                     right <- unpacker $ args !! 1
+                                     return . Bool $ left `op` right
+
+numBoolBinop :: (Integer -> Integer -> Bool) -> [LispVal] -> ThrowsError LispVal
+numBoolBinop = boolBinop unpackNum
+
+boolBoolBinop :: (Bool -> Bool -> Bool) -> [LispVal] -> ThrowsError LispVal
+boolBoolBinop = boolBinop unpackBool
+
+strBoolBinop :: (String -> String -> Bool) -> [LispVal] -> ThrowsError LispVal
+strBoolBinop = boolBinop unpackStr
+
+unpackStr :: LispVal -> ThrowsError String
+unpackStr (String s) = return s
+unpackStr (Number n) = return . show $ n
+unpackStr (Bool b) = return . show $ b
+unpackStr others = throwError $ TypeMismatch "string" others
+
+unpackBool :: LispVal -> ThrowsError Bool
+unpackBool (Bool b) = return b
+unpackBool others = throwError $ TypeMismatch "boolean" others
 
 numericBinop :: (Integer -> Integer -> Integer) -> [LispVal] -> ThrowsError LispVal
 numericBinop _ singleVal@[_] = throwError $ NumArgs 2 singleVal
@@ -130,6 +180,63 @@ unpackNum str@(String s) = let parsed = reads s in
                           else return . fst $ parsed !! 0
 unpackNum (List [n]) = unpackNum n
 unpackNum notNum = throwError $ TypeMismatch "number" notNum
+
+car :: [LispVal] -> ThrowsError LispVal
+car [List (x : _)] = return x
+car [DottedList (x : _) _] = return x
+car [badArg] = throwError $ TypeMismatch "pair" badArg
+car badArgs = throwError $ NumArgs 1 badArgs
+
+cdr :: [LispVal] -> ThrowsError LispVal
+cdr [List (_ : xs)] = return . List $ xs
+cdr [DottedList [_] x] = return x
+cdr [DottedList (_ : xs) x] = return (DottedList xs x)
+cdr [badArg] = throwError $ TypeMismatch "pair" badArg
+cdr badArgs = throwError $ NumArgs 1 badArgs
+
+cons :: [LispVal] -> ThrowsError LispVal
+cons [x, List []] = return $ List [x]
+cons [x, List xs] = return $ List $ [x] ++ xs
+cons [x, DottedList xs x'] = return $ DottedList ([x] ++ xs) x'
+cons [x1, x2] = return $ DottedList [x1] x2
+cons badArgs = throwError $ NumArgs 2 badArgs
+
+eqv :: [LispVal] -> ThrowsError LispVal
+eqv [(Bool a1), (Bool a2)] = return $ Bool $ a1 == a2
+eqv [(Number a1), (Number a2)] = return $ Bool $ a1 == a2
+eqv [(String a1), (String a2)] = return $ Bool $ a1 == a2
+eqv [(Atom a1), (Atom a2)] = return $ Bool $ a1 == a2
+eqv [(DottedList xs x), (DottedList ys y)] = eqv [List $ xs ++ [x], List $ ys ++ [y]]
+eqv [List a1, List a2] = return $ Bool $
+  (length a1 == length a2) && (and $ map eqvPair $ zip a1 a2)
+  where eqvPair (x1, x2) = case eqv [x1, x2] of
+                              Right (Bool val) -> val
+                              _ -> False
+eqv [_, _] = return $ Bool False
+eqv badArgs = throwError $ NumArgs 2 badArgs
+
+data Unpacker =  forall a. Eq a
+              => AnyUnpacker (LispVal -> ThrowsError a)
+
+unpackEquals :: LispVal -> LispVal -> Unpacker -> ThrowsError Bool
+unpackEquals arg1 arg2 (AnyUnpacker unpacker) =
+  do unpacked1 <- unpacker arg1
+     unpacked2 <- unpacker arg2
+     return $ unpacked1 == unpacked2
+  `catchError` (const $ return False)
+
+equal :: [LispVal] -> ThrowsError LispVal
+equal [arg1, arg2] = do
+  primitiveEquals <- liftM or $ mapM (unpackEquals arg1 arg2) [AnyUnpacker unpackNum
+                                                   ,AnyUnpacker unpackStr
+                                                   ,AnyUnpacker unpackBool
+                                                   ]
+  eqvEquals <- eqv [arg1, arg2]
+  case eqvEquals of
+    (Bool x) -> return $ Bool $ (primitiveEquals || x)
+    _ -> return $ Bool $ (primitiveEquals || False)
+equal badArgs = throwError $ NumArgs 2 badArgs
+
 
 -- exceptions
 
